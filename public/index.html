@@ -1,0 +1,481 @@
+<!doctype html>
+<html lang="pt-br">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Gerador de Certificados BJJ</title>
+    <style>
+      body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; max-width: 1200px; margin: 32px auto; padding: 0 16px; }
+      h1 { font-size: 20px; }
+      .container { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
+      @media (max-width: 900px) {
+        .container { grid-template-columns: 1fr; }
+      }
+      form { display: grid; gap: 12px; padding: 16px; border: 1px solid #ddd; border-radius: 10px; height: fit-content; }
+      label { display: grid; gap: 6px; font-size: 14px; }
+      input, select { padding: 10px; border: 1px solid #ccc; border-radius: 8px; font-size: 14px; }
+      .row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+      button { padding: 12px 14px; border: 0; border-radius: 10px; background: #111; color: #fff; cursor: pointer; font-weight: 600; }
+      button:disabled { opacity: .6; cursor: not-allowed; }
+      small { color: #555; }
+      .error { color: #d32f2f; padding: 8px; background: #ffebee; border-radius: 4px; margin-top: 8px; }
+      .preview { padding: 16px; border: 1px solid #ddd; border-radius: 10px; background: #f9f9f9; }
+      .preview h2 { font-size: 18px; margin: 0 0 12px 0; }
+      #previewCanvas { width: 100%; max-width: 100%; border: 1px solid #ccc; border-radius: 8px; background: white; display: block; }
+    </style>
+  </head>
+  <body>
+    <h1>Gerador de Certificados de Graduação (BJJ)</h1>
+    <small>
+      Gera certificados usando as imagens das faixas.
+    </small>
+
+    <div class="container">
+      <form id="certForm">
+      <label>
+        Nome do aluno
+        <input id="nome" required placeholder="Ex.: Danilo Luz Tavano" />
+      </label>
+
+      <label>
+        Faixa
+        <select id="faixa" required>
+          <option value="">Selecione...</option>
+          <option>Azul</option>
+          <option>Roxa</option>
+          <option>Marrom</option>
+          <option>Verde</option>
+          <option>Amarela</option>
+          <option>Cinza</option>
+        </select>
+      </label>
+
+      <label>
+        Data (texto livre)
+        <input id="data" placeholder="Ex.: 01/06/2024" />
+      </label>
+
+      <button id="btn" type="submit">Gerar Certificado</button>
+      <div id="error" class="error" style="display: none;"></div>
+      </form>
+
+      <div class="preview">
+        <h2>Pré-visualização</h2>
+        <canvas id="previewCanvas"></canvas>
+      </div>
+    </div>
+
+    <script>
+      // Configuration
+      let LAYOUT_CONFIG = null;
+      let FAIXA_MAP = null;
+      let LAYOUT_BASE = null;
+      let TEMPLATE_CONFIG = null;
+
+      // Cache
+      let previewTimeout = null;
+      const cachedImages = {};
+      const cachedFonts = { regular: null, name: null, date: null };
+
+      // Utility functions
+      function normalizeFaixa(faixa) {
+        return String(faixa || '').trim().toLowerCase();
+      }
+
+      function safeFileName(s) {
+        return String(s || '')
+          .trim()
+          .normalize('NFKD')
+          .replaceAll(/[\u0300-\u036f]/g, '')
+          .replaceAll(/[^a-zA-Z0-9._ -]/g, '')
+          .replaceAll(/\s+/g, '_')
+          .slice(0, 120);
+      }
+
+      function getImagePaths(filename) {
+        return [
+          `/templates/${filename}`,
+          `templates/${filename}`,
+          `../templates/${filename}`
+        ];
+      }
+
+      // Load layout configuration
+      async function loadLayoutConfig() {
+        try {
+          const response = await fetch('/layout.json');
+          if (!response.ok) throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+          
+          LAYOUT_CONFIG = await response.json();
+          FAIXA_MAP = LAYOUT_CONFIG.faixaMap;
+          
+          LAYOUT_BASE = {
+            name: LAYOUT_CONFIG.layout.name,
+            beltImage: LAYOUT_CONFIG.layout.beltImage,
+            date: LAYOUT_CONFIG.layout.date,
+            color: `rgba(${Math.round(LAYOUT_CONFIG.layout.color.r * 255)}, ${Math.round(LAYOUT_CONFIG.layout.color.g * 255)}, ${Math.round(LAYOUT_CONFIG.layout.color.b * 255)}, 0.95)`
+          };
+          
+          TEMPLATE_CONFIG = {
+            width: LAYOUT_CONFIG.template.width,
+            height: LAYOUT_CONFIG.template.height,
+            pdfWidth: LAYOUT_CONFIG.pdf.width,
+            pdfHeight: LAYOUT_CONFIG.pdf.height
+          };
+        } catch (err) {
+          console.error('Erro ao carregar layout.json:', err);
+          FAIXA_MAP = {
+            azul: 'azul.png', roxa: 'roxa.png', marrom: 'marrom.png',
+            verde: 'verde.png', amarela: 'amarela.png', cinza: 'cinza.png'
+          };
+          LAYOUT_BASE = {
+            name: { xCenter: 421, y: 342, size: 34 },
+            date: { x: 200, y: 70, size: 11 },
+            color: 'rgba(20, 20, 20, 0.95)'
+          };
+        }
+      }
+
+      // Image loading
+      async function loadImageAsDataURL(url) {
+        const response = await fetch(url);
+        if (!response.ok) throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+        
+        const blob = await response.blob();
+        return new Promise((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onloadend = () => resolve(reader.result);
+          reader.onerror = reject;
+          reader.readAsDataURL(blob);
+        });
+      }
+
+      async function loadImageElement(url) {
+        const dataURL = await loadImageAsDataURL(url);
+        return new Promise((resolve, reject) => {
+          const img = new Image();
+          img.onload = () => img.complete && img.naturalWidth > 0 ? resolve(img) : reject(new Error('Imagem não carregada completamente'));
+          img.onerror = () => reject(new Error(`Não foi possível carregar ${url}`));
+          img.src = dataURL;
+        });
+      }
+
+      async function loadImageWithFallback(paths) {
+        const errors = [];
+        for (const path of paths) {
+          try {
+            return await loadImageElement(path);
+          } catch (err) {
+            errors.push(`${path} (${err.message})`);
+          }
+        }
+        throw new Error(`Não foi possível carregar a imagem.\nTentados:\n${errors.join('\n')}\n\nCertifique-se de que está servindo os arquivos através de um servidor HTTP.\nURL atual: ${globalThis.location.href}`);
+      }
+
+      async function getImage(filename, useCache = true) {
+        const paths = getImagePaths(filename);
+        const cacheKey = paths[0];
+        
+        if (useCache && cachedImages[cacheKey]) {
+          return cachedImages[cacheKey];
+        }
+        
+        const img = await loadImageWithFallback(paths);
+        if (useCache) cachedImages[cacheKey] = img;
+        return img;
+      }
+
+      // Font loading
+      async function loadFontWithFallback(paths, fontName) {
+        for (const path of paths) {
+          try {
+            const response = await fetch(path);
+            if (!response.ok) continue;
+            
+            const fontBytes = await response.arrayBuffer();
+            const fontBlob = new Blob([fontBytes], { type: 'font/ttf' });
+            const fontUrl = URL.createObjectURL(fontBlob);
+            const fontFace = new FontFace(fontName, `url(${fontUrl})`);
+            await fontFace.load();
+            document.fonts.add(fontFace);
+            URL.revokeObjectURL(fontUrl);
+            return;
+          } catch (err) {
+            continue;
+          }
+        }
+        throw new Error(`Não foi possível carregar a fonte ${fontName}`);
+      }
+
+      async function loadFonts() {
+        if (cachedFonts.regular) return;
+        
+        try {
+          if (LAYOUT_CONFIG?.fonts) {
+            const basePath = LAYOUT_CONFIG.fonts.basePath || '/fonts';
+            const fontConfigs = {};
+            
+            ['name', 'date'].forEach(element => {
+              const fontConfig = LAYOUT_CONFIG.fonts.elements[element] || LAYOUT_CONFIG.fonts.default;
+              fontConfigs[fontConfig.name] = fontConfig;
+            });
+            
+            for (const [fontName, fontConfig] of Object.entries(fontConfigs)) {
+              const fontPaths = [
+                `${basePath}/${fontConfig.file}`,
+                `fonts/${fontConfig.file}`,
+                `../fonts/${fontConfig.file}`
+              ];
+              await loadFontWithFallback(fontPaths, fontName);
+            }
+            
+            cachedFonts.regular = LAYOUT_CONFIG.fonts.default.name;
+            cachedFonts.name = (LAYOUT_CONFIG.fonts.elements.name || LAYOUT_CONFIG.fonts.default).name;
+            cachedFonts.date = (LAYOUT_CONFIG.fonts.elements.date || LAYOUT_CONFIG.fonts.default).name;
+          } else {
+            const fontPaths = ['/fonts/Dearest.ttf', 'fonts/Dearest.ttf', '../fonts/Dearest.ttf'];
+            await loadFontWithFallback(fontPaths, 'Dearest');
+            cachedFonts.regular = cachedFonts.name = cachedFonts.date = 'Dearest';
+          }
+          
+          await new Promise(resolve => setTimeout(resolve, 100));
+        } catch (err) {
+          console.warn('Não foi possível carregar as fontes customizadas, usando fonte do sistema', err);
+          cachedFonts.regular = cachedFonts.name = cachedFonts.date = 'serif';
+        }
+      }
+
+      // Scale calculation
+      function calculateScales(canvasWidth, canvasHeight) {
+        const templateWidth = TEMPLATE_CONFIG?.width || 4936;
+        const templateHeight = TEMPLATE_CONFIG?.height || 3488;
+        const pdfWidth = TEMPLATE_CONFIG?.pdfWidth || 842;
+        const pdfHeight = TEMPLATE_CONFIG?.pdfHeight || 595;
+        
+        const scaleXTemplateToPdf = pdfWidth / templateWidth;
+        const scaleYTemplateToPdf = pdfHeight / templateHeight;
+        const scaleXPdfToCanvas = canvasWidth / pdfWidth;
+        const scaleYPdfToCanvas = canvasHeight / pdfHeight;
+        
+        return {
+          scaleX: scaleXTemplateToPdf * scaleXPdfToCanvas,
+          scaleY: scaleYTemplateToPdf * scaleYPdfToCanvas,
+          scaleSize: Math.min(scaleXTemplateToPdf, scaleYTemplateToPdf) * Math.min(scaleXPdfToCanvas, scaleYPdfToCanvas)
+        };
+      }
+
+      // Drawing functions
+      function drawBelt(ctx, faixaImg, scales, canvasHeight) {
+        const { scaleX, scaleY } = scales;
+        const beltWidth = faixaImg.width * scaleX;
+        const beltHeight = faixaImg.height * scaleY;
+        const beltX = (LAYOUT_BASE.beltImage.xCenter * scaleX) - (beltWidth / 2);
+        const beltY = canvasHeight - (LAYOUT_BASE.beltImage.y * scaleY) - (beltHeight / 2);
+        ctx.drawImage(faixaImg, beltX, beltY, beltWidth, beltHeight);
+      }
+
+      function drawText(ctx, text, layout, fontKey, scales, canvasHeight) {
+        if (!text) return;
+        
+        const { scaleX, scaleY, scaleSize } = scales;
+        const size = layout.size * scaleSize;
+        const fontName = cachedFonts[fontKey] || cachedFonts.regular;
+        
+        ctx.font = `${size}px ${fontName}`;
+        ctx.fillStyle = LAYOUT_BASE.color;
+        ctx.textAlign = layout.xCenter ? 'center' : 'left';
+        ctx.textBaseline = 'top';
+        
+        const x = layout.xCenter ? layout.xCenter * scaleX : layout.x * scaleX;
+        const y = canvasHeight - (layout.y * scaleY);
+        
+        ctx.fillText(text, x, y);
+      }
+
+      function showCanvasError(canvas, message) {
+        if (canvas.width === 0 || canvas.height === 0) {
+          canvas.width = 500;
+          canvas.height = 350;
+        }
+        const ctx = canvas.getContext('2d');
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        ctx.fillStyle = '#ffebee';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.fillStyle = '#d32f2f';
+        ctx.font = '14px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText('Erro ao carregar preview', canvas.width / 2, canvas.height / 2 - 10);
+        ctx.fillText(message.substring(0, 50), canvas.width / 2, canvas.height / 2 + 10);
+      }
+
+      function showCanvasPlaceholder(canvas) {
+        if (canvas.width === 0 || canvas.height === 0) {
+          canvas.width = 500;
+          canvas.height = 350;
+        }
+        const ctx = canvas.getContext('2d');
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        ctx.fillStyle = '#f0f0f0';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.fillStyle = '#999';
+        ctx.font = '16px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText('Selecione uma faixa para ver a pré-visualização', canvas.width / 2, canvas.height / 2);
+      }
+
+      // Preview
+      async function updatePreview() {
+        const nome = document.getElementById('nome').value.trim();
+        const faixa = document.getElementById('faixa').value.trim();
+        const data = document.getElementById('data').value.trim();
+        const canvas = document.getElementById('previewCanvas');
+        const ctx = canvas.getContext('2d');
+
+        if (!faixa) {
+          showCanvasPlaceholder(canvas);
+          return;
+        }
+
+        clearTimeout(previewTimeout);
+        previewTimeout = setTimeout(async () => {
+          try {
+            if (!FAIXA_MAP || !LAYOUT_BASE) {
+              await loadLayoutConfig();
+            }
+            
+            const faixaNorm = normalizeFaixa(faixa);
+            const faixaFile = FAIXA_MAP[faixaNorm];
+            if (!faixaFile) {
+              console.warn('Faixa não encontrada:', faixa);
+              return;
+            }
+
+            const templateImg = await getImage('template.png');
+            const faixaImg = await getImage(faixaFile);
+
+            const maxWidth = 500;
+            const scale = Math.min(maxWidth / templateImg.width, 1);
+            canvas.width = templateImg.width * scale;
+            canvas.height = templateImg.height * scale;
+
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            ctx.drawImage(templateImg, 0, 0, canvas.width, canvas.height);
+
+            const scales = calculateScales(canvas.width, canvas.height);
+            drawBelt(ctx, faixaImg, scales, canvas.height);
+
+            await loadFonts();
+            await document.fonts.ready;
+
+            drawText(ctx, nome, LAYOUT_BASE.name, 'name', scales, canvas.height);
+            drawText(ctx, data, LAYOUT_BASE.date, 'date', scales, canvas.height);
+          } catch (err) {
+            console.error('Erro ao atualizar preview:', err);
+            showCanvasError(canvas, err.message);
+          }
+        }, 300);
+      }
+
+      // Generate image
+      async function generateImage({ nome, faixa, data }) {
+        if (!FAIXA_MAP || !LAYOUT_BASE) {
+          await loadLayoutConfig();
+        }
+        
+        const faixaNorm = normalizeFaixa(faixa);
+        const faixaFile = FAIXA_MAP[faixaNorm];
+        if (!faixaFile) {
+          throw new Error(`Faixa "${faixa}" não encontrada. Faixas disponíveis: ${Object.keys(FAIXA_MAP).join(', ')}`);
+        }
+
+        const templateImg = await getImage('template.png', false);
+        const faixaImg = await getImage(faixaFile, false);
+
+        const canvas = document.createElement('canvas');
+        canvas.width = templateImg.width;
+        canvas.height = templateImg.height;
+        const ctx = canvas.getContext('2d');
+
+        ctx.drawImage(templateImg, 0, 0);
+        const scales = calculateScales(canvas.width, canvas.height);
+        drawBelt(ctx, faixaImg, scales, canvas.height);
+
+        await loadFonts();
+        await document.fonts.ready;
+
+        drawText(ctx, nome?.trim(), LAYOUT_BASE.name, 'name', scales, canvas.height);
+        drawText(ctx, data?.trim(), LAYOUT_BASE.date, 'date', scales, canvas.height);
+
+        try {
+          const dataURL = canvas.toDataURL('image/png');
+          const base64 = dataURL.split(',')[1];
+          const binary = atob(base64);
+          const bytes = new Uint8Array(binary.length);
+          for (let i = 0; i < binary.length; i++) {
+            bytes[i] = binary.charCodeAt(i);
+          }
+          return new Blob([bytes], { type: 'image/png' });
+        } catch (err) {
+          return new Promise((resolve, reject) => {
+            canvas.toBlob(
+              (blob) => blob ? resolve(blob) : reject(new Error('Canvas está contaminado. As imagens devem ser carregadas como data URLs.')),
+              'image/png'
+            );
+          });
+        }
+      }
+
+      // Event handlers
+      const form = document.getElementById('certForm');
+      const btn = document.getElementById('btn');
+      const errorDiv = document.getElementById('error');
+
+      document.getElementById('nome').addEventListener('input', updatePreview);
+      document.getElementById('faixa').addEventListener('change', updatePreview);
+      document.getElementById('data').addEventListener('input', updatePreview);
+
+      (async () => {
+        await loadLayoutConfig();
+        setTimeout(updatePreview, 100);
+      })();
+
+      form.addEventListener('submit', async (e) => {
+        e.preventDefault();
+
+        btn.disabled = true;
+        btn.textContent = 'Gerando certificado...';
+        errorDiv.style.display = 'none';
+
+        try {
+          const nome = document.getElementById('nome').value.trim();
+          const faixa = document.getElementById('faixa').value.trim();
+          const data = document.getElementById('data').value.trim();
+
+          if (!nome || !faixa) {
+            throw new Error('Nome e faixa são obrigatórios.');
+          }
+
+          const blob = await generateImage({ nome, faixa, data });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = `certificado_${safeFileName(nome)}_${safeFileName(faixa)}.png`;
+          document.body.appendChild(a);
+          a.click();
+          a.remove();
+          URL.revokeObjectURL(url);
+
+          btn.disabled = false;
+          btn.textContent = 'Gerar Certificado';
+        } catch (err) {
+          console.error('Erro ao gerar imagem:', err);
+          errorDiv.textContent = `Erro: ${err.message || err}`;
+          errorDiv.style.display = 'block';
+          btn.disabled = false;
+          btn.textContent = 'Gerar Certificado';
+        }
+      });
+
+    </script>
+  </body>
+</html>

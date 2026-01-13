@@ -1,0 +1,77 @@
+{
+  "template": {
+    "width": 4936,
+    "height": 3488
+  },
+  "pdf": {
+    "width": 842,
+    "height": 595
+  },
+  "layout": {
+    "name": {
+      "xCenter": 2468,
+      "y": 2000,
+      "size": 180
+    },
+    "beltImage": {
+      "xCenter": 2468,
+      "y": 1450,
+      "width": 1070,
+      "height": 354
+    },
+    "grau": {
+      "xCenter": 2468,
+      "y": 2400,
+      "size": 80
+    },
+    "date": {
+      "x": 1700,
+      "y": 770,
+      "size": 70
+    },
+    "professor": {
+      "xRight": 4600,
+      "y": 200,
+      "size": 40
+    },
+    "color": {
+      "r": 0.08,
+      "g": 0.08,
+      "b": 0.08
+    }
+  },
+  "faixaMap": {
+    "azul": "azul.png",
+    "roxa": "roxa.png",
+    "marrom": "marrom.png",
+    "preta": "-preto.png",
+    "verde": "verde.png",
+    "amarela": "amarela.png",
+    "cinza": "cinza.png"
+  },
+  "fonts": {
+    "basePath": "/fonts",
+    "default": {
+      "file": "Dearest.ttf",
+      "name": "Dearest"
+    },
+    "elements": {
+      "name": {
+        "file": "Dearest.ttf",
+        "name": "Dearest"
+      },
+      "grau": {
+        "file": "Dearest.ttf",
+        "name": "Dearest"
+      },
+      "date": {
+        "file": "Dearest.ttf",
+        "name": "Dearest"
+      },
+      "professor": {
+        "file": "Dearest.ttf",
+        "name": "Dearest"
+      }
+    }
+  }
+}
